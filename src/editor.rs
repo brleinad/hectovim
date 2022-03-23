@@ -11,6 +11,11 @@ const STATUS_FG_COLOR: color::Rgb = color::Rgb(63, 63, 63);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const QUIT_TIMES: u8 = 3;
 
+enum EditorMode {
+    Normal,
+    Insert
+}
+
 struct StatusMessage {
     text: String,
     time: Instant,
@@ -32,6 +37,7 @@ pub struct Editor {
     document: Document,
     status_message: StatusMessage,
     quit_times: u8,
+    mode: EditorMode,
 }
 
 #[derive(Default)]
@@ -65,6 +71,7 @@ impl Editor {
             document,
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
+            mode: EditorMode::Normal,
         }
     }
     pub fn run(&mut self) {
@@ -131,16 +138,13 @@ impl Editor {
                 self.should_quit = true
             },
             Key::Ctrl('s') => self.save(),
-            Key::Char(c) => {
-                self.document.insert(&self.cursor_position, c);
-                self.move_cursor(Key::Right);
-            },
-            Key::Delete => self.document.delete(&self.cursor_position),
-            Key::Backspace => {
-                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
-                    self.move_cursor(Key::Left);
-                    self.document.delete(&self.cursor_position);
+            Key::Char('i') => {
+                if let EditorMode::Normal = self.mode  {
+                    self.mode = EditorMode::Insert;
                 }
+            }
+            Key::Esc => {
+                self.mode = EditorMode::Normal;
             }
             Key::Up
             | Key::Down
@@ -149,7 +153,29 @@ impl Editor {
             | Key::PageUp
             | Key::PageDown
             | Key::End
+            | Key::Char('h')
+            | Key::Char('j')
+            | Key::Char('k')
+            | Key::Char('l')
             | Key::Home => self.move_cursor(pressed_key),
+            Key::Char(c) => {
+                match self.mode {
+                    EditorMode::Insert => {
+                        self.document.insert(&self.cursor_position, c);
+                        self.move_cursor(Key::Right);
+                    }
+                    EditorMode::Normal => {
+                        // For now do nothing here
+                    }
+                }
+            },
+            Key::Delete => self.document.delete(&self.cursor_position),
+            Key::Backspace => {
+                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
+                    self.move_cursor(Key::Left);
+                    self.document.delete(&self.cursor_position);
+                }
+            }
             _ => (),
         }
         self.scroll();
@@ -176,70 +202,117 @@ impl Editor {
         }
     }
     fn move_cursor(&mut self, key: Key) {
-        let terminal_height = self.terminal.size().height as usize;
         let Position {mut y, mut x} = self.cursor_position;
         let size = self.terminal.size();
-        let height = self.document.len();
-        let width = if let Some(row) = self.document.row(y) {
-            row.len()
-        } else {
-            0
-        };
 
         match key {
-            Key::Up => y = y.saturating_sub(1),
-            Key::Down => {
-                if y < height {
-                    y = y.saturating_add(1)
+            Key::Down => self.move_cursor_down(),
+            Key::Up  => self.move_cursor_up(),
+            Key::Left  => self.move_cursor_left(),
+            Key::Right => self.move_cursor_right(),
+            Key::Char('h') => {
+                if let EditorMode::Normal = self.mode  {
+                    self.move_cursor_left();
                 }
-            },
-            Key::Left => {
-                if x > 0 {
-                    x -= 1;
-                } else if y > 0 {
-                    y -= 1;
-                    if let Some(row) = self.document.row(y) {
-                        x = row.len();
-                    } else {
-                        x = 0;
-                    }
+            }
+            Key::Char('j') => {
+                if let EditorMode::Normal = self.mode {
+                    self.move_cursor_down();
                 }
-            },
-            Key::Right => {
-                if x < width {
-                    x += 1;
-                } else if y < height {
-                    y += 1;
-                    x = 0;
+            }
+            Key::Char('k') => {
+                if let EditorMode::Normal = self.mode {
+                    self.move_cursor_up();
                 }
-            },
-            Key::PageUp => {
-                 y = if y > terminal_height {
-                     y - terminal_height
-                 } else {
-                     0
-                 };
-            },
-            Key::PageDown => {
-                y = if y.saturating_add(terminal_height) < height {
-                    y + terminal_height as usize
-                } else {
-                    height
+            }
+            Key::Char('l') => {
+                if let EditorMode::Normal = self.mode {
+                    self.move_cursor_right();
                 }
-            },
-            Key::Home => x = 0,
-            Key::End => x = width,
+            }
+            Key::PageUp => self.move_cursor_page_up(),
+            Key::PageDown => self.move_cursor_down(),
+            // Key::Home => x = 0, //TODO?
+            // Key::End => x = width, //TODO but vim way
             _ => (),
         }
+    }
+    fn handle_row_overflow(&self, pos: Position) -> usize {
+        let Position {mut y, mut x} = pos;
         let width = if let Some(row) = self.document.row(y) {
             row.len()
         } else {
             0
         };
         if x > width {
-            x = width;
+            return width;
+        }
+        x
+    }
+    fn move_cursor_left(&mut self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        if x > 0 {
+            x -= 1;
+        } else if y > 0 {
+            y -= 1;
+            if let Some(row) = self.document.row(y) {
+                x = row.len();
+            } else {
+                x = 0;
+            }
+        }
+        x = self.handle_row_overflow(Position{x, y});
+        self.cursor_position = Position {x, y };
+    }
+    fn move_cursor_right(&mut self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        let height = self.document.len();
+        let width = if let Some(row) = self.document.row(y) {
+            row.len()
+        } else {
+            0
+        };
+        if x < width {
+            x += 1;
+        } else if y < height {
+            y += 1;
+            x = 0;
+        }
+        x = self.handle_row_overflow(Position{x, y});
+        self.cursor_position = Position {x, y };
+        self.cursor_position = Position {x, y };
+    }
+    fn move_cursor_down(&mut self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        let height = self.document.len();
+        if y < height {
+            y = y.saturating_add(1)
         }
         self.cursor_position = Position {x, y };
+    }
+    fn move_cursor_up(&mut self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        y = y.saturating_sub(1);
+        self.cursor_position = Position {x, y };
+    }
+    fn move_cursor_page_up(&self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        let terminal_height = self.terminal.size().height as usize;
+        y = if y > terminal_height {
+            y - terminal_height
+        } else {
+            0
+        };
+    }
+    fn move_cursor_page_down(&self) {
+        let Position {mut y, mut x} = self.cursor_position;
+        let terminal_height = self.terminal.size().height as usize;
+        let height = self.document.len();
+        y = if y.saturating_add(terminal_height) < height {
+            y + terminal_height as usize
+        } else {
+            height
+        }
     }
     fn draw_rows(&self) {
         let height = self.terminal.size().height;
